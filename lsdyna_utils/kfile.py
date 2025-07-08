@@ -1,10 +1,22 @@
 """
-kfile.py ── Minimal helpers to patch LS-DYNA keyword files (.k)
+Author : Rong Jin, University of Kentucky
+Date   : 07-08-2025
+File   : kfile.py – minimal helper for patching LS-DYNA keyword (*.k) files
 
-Usage
------
-from lsdyna_utils.kfile import modify_k_params
-modify_k_params("Run.k", "Run_mod.k", {"RC1": 0.002, "RD41": 0.35})
+This module exposes one public function
+---------------------------------------
+modify_k_params(kfile_in, kfile_out=None, repl={})
+    • Replaces the numeric value of specific *labels* in a *.k file.
+    • Works on any line that looks like:   LABEL , value
+      (     comma separates label and value, anything after the first
+       comma is treated as the numeric part.)
+    • If *kfile_out* is None the original file is overwritten in-place.
+
+Typical usage
+-------------
+>>> from lsdyna_utils.kfile import modify_k_params
+>>> modify_k_params("Run.k", "Run_mod.k",
+...                 {"RC1": 0.0025, "RD41": 0.35, "RG": 1.155})
 """
 
 from __future__ import annotations
@@ -19,34 +31,60 @@ def modify_k_params(
     repl: Mapping[str, float] | Sequence[tuple[str, float]] = (),
 ) -> Path:
     """
-    用新数值替换 .k 文件中的指定 label, value 行。
+    Replace the value of *label,value* rows in an LS-DYNA *.k file.
 
     Parameters
     ----------
-    kfile_in : str | Path
-        输入 .k 文件
-    kfile_out : str | Path | None
-        输出文件；若为 None 则原地覆盖
-    repl : dict[str, float] 或 list[(label, value)]
-        需要替换的键值对，例如 {"RC1": 0.003, "RG": 1.15}
+    kfile_in
+        Path to the original keyword file.
+    kfile_out
+        Where to write the patched file.
+        • If *None*  → overwrite *kfile_in*.
+        • If a path  → write to that new file (original stays untouched).
+    repl
+        Mapping ``{label: new_value}`` **or** a sequence of
+        ``[(label, new_value), …]``.  Labels are matched *case-sensitively*.
 
     Returns
     -------
     Path
-        写出的文件路径
+        Path of the file that was written (same as *kfile_out*
+        or *kfile_in* if overwritten).
+
+    Notes
+    -----
+    * Only the first comma on each line is considered the label/value split.
+    * If the same label appears multiple times, **all** occurrences are
+      replaced.
+    * Numeric values are written in scientific notation with four
+      significant digits (``%.4e``) – tweak the format string if a
+      different precision is required.
     """
-    pairs = dict(repl)
-    lines: list[str]
+    # --- Normalise replacements to a plain dict for O(1) look-up ----------
+    pairs: dict[str, float] = dict(repl)
+
+    # --- Read the entire file into a list of strings ----------------------
     with open(kfile_in, "r") as fh:
-        lines = fh.readlines()
+        lines: list[str] = fh.readlines()
 
+    # --- Scan & patch lines in-memory ------------------------------------
     for idx, line in enumerate(lines):
-        if "," in line:
-            lbl, _ = [s.strip() for s in line.split(",", 1)]
-            if lbl in pairs:
-                lines[idx] = f"{lbl},{pairs[lbl]:.6e}\n"
+        if "," not in line:
+            # Skip lines that clearly cannot be “LABEL,value”
+            continue
 
-    out = Path(kfile_out or kfile_in)
-    with open(out, "w") as fh:
+        # Split only once – anything after the first comma belongs to value
+        label, _ = [frag.strip() for frag in line.split(",", maxsplit=1)]
+
+        if label in pairs:
+            # Format new value (scientific notation, 4 decimals)
+            new_val = f"{pairs[label]:.4e}"
+            lines[idx] = f"{label},{new_val}\n"
+
+    # --- Decide where to write the output ---------------------------------
+    out_path = Path(kfile_out or kfile_in)  # overwrite if None
+
+    with open(out_path, "w") as fh:
         fh.writelines(lines)
-    return out
+
+    return out_path
